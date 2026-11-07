@@ -312,6 +312,40 @@ async function scrapeInstagram({ type, input, count = 4, session = '' }) {
 
     await safeNavigate(targetUrl, 'domcontentloaded');
 
+    // Check if Instagram redirected to login wall or blocked unauthenticated access
+    if (page.url() === 'https://www.instagram.com/' || page.url().includes('/accounts/login')) {
+      throw new Error(`Instagram requires an active login session to view this target. Please paste a fresh sessionid cookie.`);
+    }
+
+    // Dismiss any modal overlay dialogs if present
+    try {
+      await page.evaluate(() => {
+        const closeIcons = document.querySelectorAll('svg[aria-label="Close"], button[aria-label="Close"]');
+        closeIcons.forEach(btn => btn.closest('button')?.click());
+      });
+    } catch (e) {}
+
+    // Check target account status (private, not found, or 0 posts)
+    const accountStatus = await page.evaluate(() => {
+      const text = document.body ? document.body.innerText : '';
+      const isPrivate = text.includes('This Account is Private') || text.includes('This account is private');
+      const notFound = text.includes("Sorry, this page isn't available") || document.title.includes('Page Not Found');
+      const noPosts = text.includes('No Posts Yet') || text.includes('No posts yet');
+      return { isPrivate, notFound, noPosts };
+    });
+
+    if (accountStatus.notFound) {
+      throw new Error(`The target account or URL does not exist or has been removed.`);
+    }
+
+    if (accountStatus.isPrivate) {
+      throw new Error(`This account (@${targetUsername || 'target'}) is Private. An active session cookie with follower access is required.`);
+    }
+
+    if (accountStatus.noPosts) {
+      throw new Error(`The account @${targetUsername || 'target'} was found, but it currently has 0 posts published.`);
+    }
+
     try {
       await page.waitForSelector('a[href*="/p/"], a[href*="/reel/"]', { timeout: 12000 });
     } catch (e) {}
@@ -386,6 +420,36 @@ async function scrapeInstagram({ type, input, count = 4, session = '' }) {
   }
 }
 
+// High-Visibility Meaningful OSINT + Instagram Favicon SVG
+const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <radialGradient id="igGlow" cx="20%" cy="100%" r="120%">
+      <stop offset="0%" stop-color="#ffdc80"/>
+      <stop offset="25%" stop-color="#fcaf45"/>
+      <stop offset="50%" stop-color="#f77737"/>
+      <stop offset="75%" stop-color="#f56040"/>
+      <stop offset="85%" stop-color="#e1306c"/>
+      <stop offset="95%" stop-color="#c13584"/>
+      <stop offset="100%" stop-color="#833ab4"/>
+    </radialGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="1.5" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#igGlow)"/>
+  <rect x="13" y="13" width="38" height="38" rx="10" fill="none" stroke="#ffffff" stroke-width="4.5" filter="url(#shadow)"/>
+  <circle cx="32" cy="32" r="10.5" fill="none" stroke="#ffffff" stroke-width="4.5" filter="url(#shadow)"/>
+  <line x1="32" y1="5" x2="32" y2="13" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/>
+  <line x1="32" y1="51" x2="32" y2="59" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/>
+  <line x1="5" y1="32" x2="13" y2="32" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/>
+  <line x1="51" y1="32" x2="59" y2="32" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/>
+  <circle cx="43.5" cy="20.5" r="3.2" fill="#ffffff" filter="url(#shadow)"/>
+  <circle cx="32" cy="32" r="4.2" fill="#00f2fe"/>
+  <circle cx="32" cy="32" r="2" fill="#ffffff"/>
+</svg>`;
+
+const FAVICON_DATA_URL = 'data:image/svg+xml;base64,' + Buffer.from(FAVICON_SVG).toString('base64');
+
 // Embedded Single-Page Frontend
 const HTML_CONTENT = `<!DOCTYPE html>
 <html lang="en">
@@ -393,6 +457,8 @@ const HTML_CONTENT = `<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Instagram OSINT Intelligence Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="${FAVICON_DATA_URL}">
+  <link rel="alternate icon" href="/favicon.ico">
   <style>
     :root {
       --bg: #090d16;
@@ -511,10 +577,15 @@ const HTML_CONTENT = `<!DOCTYPE html>
       align-items: center;
       justify-content: center;
       gap: 8px;
+      user-select: none;
     }
-    .btn:hover {
+    .btn:hover:not(:disabled) {
       box-shadow: 0 6px 20px rgba(79, 70, 229, 0.5);
       transform: translateY(-1px);
+    }
+    .btn:active:not(:disabled) {
+      transform: translateY(1px);
+      box-shadow: 0 2px 10px rgba(79, 70, 229, 0.4);
     }
     .btn:disabled {
       background: #334155;
@@ -829,12 +900,15 @@ const HTML_CONTENT = `<!DOCTYPE html>
   <div class="container">
     <header>
       <div class="badge-top">🛡️ Active OSINT Engine</div>
-      <h1>Instagram Intelligence Scraper</h1>
+      <div style="display: flex; align-items: center; justify-content: center; gap: 14px; margin: 4px 0 8px 0;">
+        <img src="${FAVICON_DATA_URL}" alt="Logo" style="width: 44px; height: 44px; border-radius: 12px; box-shadow: 0 4px 18px rgba(225, 48, 108, 0.45); flex-shrink: 0;">
+        <h1 style="margin: 0;">Instagram Intelligence Scraper</h1>
+      </div>
       <p>Live post, media, and per-post comment extraction</p>
     </header>
 
     <div class="panel">
-      <form id="scrapeForm">
+      <form id="scrapeForm" onsubmit="event.preventDefault(); startScraping(); return false;">
         <div class="grid">
           <div class="form-group">
             <label for="type">Scrape Type</label>
@@ -866,7 +940,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
           <span class="help-hint">Get from browser DevTools &rarr; Application &rarr; Cookies &rarr; 'sessionid'</span>
         </div>
 
-        <button type="submit" id="submitBtn" class="btn">
+        <button type="button" id="submitBtn" class="btn" onclick="startScraping()">
           <span id="btnText">Launch Scraper</span>
         </button>
       </form>
@@ -885,8 +959,9 @@ const HTML_CONTENT = `<!DOCTYPE html>
           </div>
         </div>
         <div class="export-actions">
-          <button id="downloadJsonBtn" class="action-btn">📥 Export JSON</button>
+          <button id="downloadPdfBtn" class="action-btn" style="background: linear-gradient(135deg, #6366f1, #a855f7); color: #ffffff; border-color: #6366f1; font-weight: 600; box-shadow: 0 2px 10px rgba(99, 102, 241, 0.35);">📑 Export PDF</button>
           <button id="downloadCsvBtn" class="action-btn">📊 Export CSV</button>
+          <button id="downloadJsonBtn" class="action-btn">📥 Export JSON</button>
           <button id="toggleJsonBtn" class="action-btn">Code View</button>
         </div>
       </div>
@@ -918,6 +993,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
     const toggleJsonBtn = document.getElementById('toggleJsonBtn');
     const downloadJsonBtn = document.getElementById('downloadJsonBtn');
     const downloadCsvBtn = document.getElementById('downloadCsvBtn');
+    const downloadPdfBtn = document.getElementById('downloadPdfBtn');
     const searchInput = document.getElementById('searchInput');
     const targetHeading = document.getElementById('targetHeading');
     const targetSubtext = document.getElementById('targetSubtext');
@@ -927,26 +1003,60 @@ const HTML_CONTENT = `<!DOCTYPE html>
     let currentTargetName = '';
     let showJson = false;
 
+    // Auto-populate from URL query parameters if present (e.g. if reloaded or submitted)
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('input')) document.getElementById('input').value = urlParams.get('input');
+    if (urlParams.get('type')) document.getElementById('type').value = urlParams.get('type');
+    if (urlParams.get('count')) document.getElementById('count').value = urlParams.get('count');
+    if (urlParams.get('session')) document.getElementById('session').value = urlParams.get('session');
+
     toggleJsonBtn.addEventListener('click', () => {
       showJson = !showJson;
       rawJson.style.display = showJson ? 'block' : 'none';
       toggleJsonBtn.textContent = showJson ? 'Hide Code' : 'Code View';
     });
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
+    function handleMediaError(img) {
+      img.onerror = null;
+      img.src = 'https://placehold.co/400x300/1e293b/white?text=Media+Preview';
+    }
 
-      const target = document.getElementById('input').value.trim();
+    function copyToClipboard(text, msg) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text);
+      }
+      if (msg) alert(msg);
+    }
+
+    let isScraping = false;
+
+    async function startScraping() {
+      if (isScraping) return;
+
+      const targetInput = document.getElementById('input');
+      const target = (targetInput.value || '').trim();
       const type = document.getElementById('type').value;
       const count = parseInt(document.getElementById('count').value, 10) || 4;
-      const session = document.getElementById('session').value.trim();
+      const session = (document.getElementById('session').value || '').trim();
+
+      if (!target) {
+        statusBox.style.display = 'flex';
+        statusBox.className = 'status-box error';
+        statusBox.innerHTML = '⚠️ <strong>Missing Target:</strong> Please enter an Instagram username or direct post URL.';
+        targetInput.focus();
+        targetInput.style.borderColor = '#ef4444';
+        targetInput.addEventListener('input', () => { targetInput.style.borderColor = ''; }, { once: true });
+        return;
+      }
 
       currentTargetName = target;
+      isScraping = true;
 
       statusBox.style.display = 'flex';
       statusBox.className = 'status-box info';
       statusBox.innerHTML = '<span class="spinner"></span> <span>Scraping live posts and structured comments... (~15-25s)</span>';
       submitBtn.disabled = true;
+      submitBtn.style.cursor = 'wait';
       btnText.innerHTML = '<span class="spinner"></span> Scraping live...';
       resultsSection.style.display = 'none';
       postsContainer.innerHTML = '';
@@ -959,7 +1069,12 @@ const HTML_CONTENT = `<!DOCTYPE html>
           body: JSON.stringify({ type, input: target, count, session })
         });
 
-        const data = await res.json();
+        let data;
+        try {
+          data = await res.json();
+        } catch (jsonErr) {
+          throw new Error('Server returned unexpected response (HTTP ' + res.status + '). Is the server running?');
+        }
 
         if (!data.success) {
           throw new Error(data.error || 'Failed to extract data.');
@@ -970,9 +1085,9 @@ const HTML_CONTENT = `<!DOCTYPE html>
         statusBox.className = 'status-box info';
         statusBox.innerHTML = '✅ Successfully extracted ' + allScrapedItems.length + ' posts with structured comments.';
 
-        targetHeading.textContent = target.startsWith('http') ? target : '@' + target;
+        targetHeading.textContent = target.startsWith('http') ? target : '@' + target.replace(/^@/, '');
         targetSubtext.textContent = allScrapedItems.length + ' posts analyzed • ' + new Date().toLocaleTimeString();
-        targetAvatar.textContent = target.charAt(0).toUpperCase();
+        targetAvatar.textContent = target.replace(/^[@https://www\.]*/, '').charAt(0).toUpperCase() || 'IG';
 
         renderPostsWithComments(allScrapedItems);
 
@@ -980,12 +1095,30 @@ const HTML_CONTENT = `<!DOCTYPE html>
         resultsSection.style.display = 'block';
 
       } catch (err) {
+        statusBox.style.display = 'flex';
         statusBox.className = 'status-box error';
-        statusBox.innerHTML = '⚠️ <strong>Extraction Error:</strong> ' + err.message;
+        const msg = (err.message && err.message.includes('Failed to fetch'))
+          ? 'Failed to connect to backend server. Please verify that "node server.js" is actively running in your terminal.'
+          : err.message;
+        statusBox.innerHTML = '⚠️ <strong>Extraction Error:</strong> ' + escapeHtml(msg);
       } finally {
+        isScraping = false;
         submitBtn.disabled = false;
+        submitBtn.style.cursor = 'pointer';
         btnText.textContent = 'Launch Scraper';
       }
+    }
+
+    window.startScraping = startScraping;
+
+    submitBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      startScraping();
+    });
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      startScraping();
     });
 
     searchInput.addEventListener('input', () => {
@@ -1026,54 +1159,62 @@ const HTML_CONTENT = `<!DOCTYPE html>
         // Render Comments List
         let commentsHtml = '';
         if (comments.length > 0) {
-          commentsHtml = comments.map(c => \`
-            <div class="comment-bubble">
-              <div class="comment-avatar">\${(c.author || 'U').charAt(0).toUpperCase()}</div>
-              <div class="comment-body">
-                <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2px;">
-                  <a href="\${c.author_url || ('https://www.instagram.com/' + (c.author || '') + '/')}" target="_blank" rel="noopener" class="comment-author">@\${escapeHtml(c.author || 'anonymous')}</a>
-                  <span style="font-size: 11px; color: #94a3b8; margin-left: 8px;">\${escapeHtml(c.time || '')}</span>
-                </div>
-                <div class="comment-text">\${escapeHtml(c.text || '')}</div>
-                \${c.comment_url ? \`<div style="margin-top: 4px;"><a href="\${c.comment_url}" target="_blank" rel="noopener" style="font-size: 11px; color: #818cf8; text-decoration: none;">View on Instagram ↗</a></div>\` : ''}
-              </div>
-            </div>
-          \`).join('');
+          commentsHtml = comments.map(function(c) {
+            const initial = (c.author || 'U').charAt(0).toUpperCase();
+            const aUrl = c.author_url || ('https://www.instagram.com/' + (c.author || '') + '/');
+            const author = escapeHtml(c.author || 'anonymous');
+            const time = escapeHtml(c.time || '');
+            const text = escapeHtml(c.text || '');
+            const permalink = c.comment_url ? ('<div style="margin-top: 4px;"><a href="' + c.comment_url + '" target="_blank" rel="noopener" style="font-size: 11px; color: #818cf8; text-decoration: none;">View on Instagram ↗</a></div>') : '';
+
+            return '<div class="comment-bubble">' +
+              '<div class="comment-avatar">' + initial + '</div>' +
+              '<div class="comment-body">' +
+                '<div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2px;">' +
+                  '<a href="' + aUrl + '" target="_blank" rel="noopener" class="comment-author">@' + author + '</a>' +
+                  '<span style="font-size: 11px; color: #94a3b8; margin-left: 8px;">' + time + '</span>' +
+                '</div>' +
+                '<div class="comment-text">' + text + '</div>' +
+                permalink +
+              '</div>' +
+            '</div>';
+          }).join('');
         } else {
           commentsHtml = '<p class="no-comments-msg">No visible comments found on this post (comments may be disabled or limited).</p>';
         }
 
-        card.innerHTML = \`
-          <div class="post-main-row">
-            <div class="post-media-col">
-              \${imgSrc ? \`<img src="\${imgSrc}" loading="lazy" onerror="this.src='https://placehold.co/400x300/1e293b/white?text=Media+Preview'">\` : '<div style="padding:40px;color:#64748b;text-align:center;">No Image Preview</div>'}
-              <span class="post-badge">\${isReel ? '🎬 Reel' : '📸 Post'}</span>
-            </div>
-            <div class="post-content-col">
-              <div class="post-meta-top">
-                <span class="post-code" title="Click to copy" onclick="navigator.clipboard.writeText('\${shortcode}')">
-                  #\${shortcode} 📋
-                </span>
-                <span style="color:#94a3b8;font-size:12px;">Post #\${idx + 1}</span>
-              </div>
-              <div class="post-caption">\${caption || '<span style="color:#64748b;font-style:italic;">No caption provided</span>'}</div>
-              <div class="post-links">
-                <a href="\${postUrl}" target="_blank" rel="noopener" class="post-link-btn">View Post on Instagram ↗</a>
-                <button class="action-btn" style="padding:4px 8px;font-size:11px;" onclick="navigator.clipboard.writeText('\${postUrl}'); alert('Post URL copied!');">Share Link</button>
-              </div>
-            </div>
-          </div>
+        const mediaPreview = imgSrc 
+          ? ('<img src="' + imgSrc + '" loading="lazy" onerror="handleMediaError(this)">')
+          : '<div style="padding:40px;color:#64748b;text-align:center;">No Image Preview</div>';
+        const badgeText = isReel ? '🎬 Reel' : '📸 Post';
 
-          <div class="comments-section">
-            <div class="comments-header">
-              <div class="comments-title">
-                <span>💬 Comments on this Post</span>
-                <span class="comments-pill">\${comments.length} comments</span>
-              </div>
-            </div>
-            <div class="comments-list">\${commentsHtml}</div>
-          </div>
-        \`;
+        card.innerHTML = 
+          '<div class="post-main-row">' +
+            '<div class="post-media-col">' +
+              mediaPreview +
+              '<span class="post-badge">' + badgeText + '</span>' +
+            '</div>' +
+            '<div class="post-content-col">' +
+              '<div class="post-meta-top">' +
+                '<span class="post-code" title="Click to copy" data-code="' + shortcode + '" onclick="copyToClipboard(this.dataset.code)">#' + shortcode + ' 📋</span>' +
+                '<span style="color:#94a3b8;font-size:12px;">Post #' + (idx + 1) + '</span>' +
+              '</div>' +
+              '<div class="post-caption">' + (caption || '<span style="color:#64748b;font-style:italic;">No caption provided</span>') + '</div>' +
+              '<div class="post-links">' +
+                '<a href="' + postUrl + '" target="_blank" rel="noopener" class="post-link-btn">View Post on Instagram ↗</a>' +
+                '<button class="action-btn" style="padding:4px 8px;font-size:11px;" data-url="' + postUrl + '" onclick="copyToClipboard(this.dataset.url, &quot;Post URL copied!&quot;)">Share Link</button>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="comments-section">' +
+            '<div class="comments-header">' +
+              '<div class="comments-title">' +
+                '<span>💬 Comments on this Post</span>' +
+                '<span class="comments-pill">' + comments.length + ' comments</span>' +
+              '</div>' +
+            '</div>' +
+            '<div class="comments-list">' + commentsHtml + '</div>' +
+          '</div>';
         postsContainer.appendChild(card);
       });
     }
@@ -1127,6 +1268,164 @@ const HTML_CONTENT = `<!DOCTYPE html>
       URL.revokeObjectURL(url);
     });
 
+    // Export Comprehensive OSINT PDF Report
+    downloadPdfBtn.addEventListener('click', () => {
+      if (!allScrapedItems.length) return alert('No data to generate PDF report.');
+      generatePdfReport(currentTargetName, allScrapedItems);
+    });
+
+    function generatePdfReport(targetName, posts) {
+      if (!posts || posts.length === 0) return alert('No scraped data available to generate PDF.');
+
+      const dateStr = new Date().toLocaleString();
+      let totalComments = 0;
+      posts.forEach(p => { totalComments += (p.comments ? p.comments.length : 0); });
+
+      let postsHtml = '';
+      posts.forEach((p, idx) => {
+        const shortcode = p.shortcode || p.id || 'N/A';
+        const postUrl = p.url || ('https://www.instagram.com/p/' + shortcode + '/');
+        const isReel = p.is_video || p.type === 'reel';
+        const img = p.thumbnail_src || p.display_url || '';
+        const caption = escapeHtml(p.description || '').replace(/\\n/g, '<br>');
+        const comments = p.comments || [];
+
+        let commentsRows = '';
+        if (comments.length > 0) {
+          comments.forEach((c, cIdx) => {
+            commentsRows += '<tr>' +
+              '<td style="width: 32px; text-align: center; color: #64748b; font-weight: 600;">' + (cIdx + 1) + '</td>' +
+              '<td style="width: 140px; font-weight: 600; color: #4338ca;">@' + escapeHtml(c.author || 'anonymous') + '</td>' +
+              '<td style="width: 65px; color: #64748b; font-size: 11px;">' + escapeHtml(c.time || '') + '</td>' +
+              '<td style="color: #1e293b; line-height: 1.4;">' + escapeHtml(c.text || '') + '</td>' +
+            '</tr>';
+          });
+        } else {
+          commentsRows = '<tr><td colspan="4" style="text-align: center; color: #94a3b8; font-style: italic; padding: 12px;">No visible comments found on this post.</td></tr>';
+        }
+
+        postsHtml += '<div class="post-card">' +
+          '<div class="post-header">' +
+            '<div>' +
+              '<span class="post-title">Post #' + (idx + 1) + '</span>' +
+              '<span class="post-code">#' + shortcode + '</span>' +
+              '<span class="post-badge">' + (isReel ? '🎬 Reel' : '📸 Post') + '</span>' +
+            '</div>' +
+            '<a href="' + postUrl + '" target="_blank" class="post-link">' + postUrl + ' ↗</a>' +
+          '</div>' +
+          '<div class="post-body">' +
+            (img ? '<img src="' + img + '" class="post-img" alt="Thumbnail" onerror="this.remove()">' : '') +
+            '<div class="post-caption-box">' +
+              '<div style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">Post Caption</div>' +
+              '<div class="post-caption">' + (caption || '<span style="color:#94a3b8; font-style:italic;">No caption provided</span>') + '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div style="margin-top: 14px;">' +
+            '<div style="font-size: 12px; font-weight: 700; color: #1e1b4b; margin-bottom: 6px; display: flex; justify-content: space-between;">' +
+              '<span>💬 Comments on this Post (' + comments.length + ')</span>' +
+              '<span style="font-size: 11px; font-weight: normal; color: #64748b;">Structured Per-Post Intelligence</span>' +
+            '</div>' +
+            '<table class="report-table">' +
+              '<thead><tr><th>#</th><th>Author</th><th>Time</th><th>Comment Text</th></tr></thead>' +
+              '<tbody>' + commentsRows + '</tbody>' +
+            '</table>' +
+          '</div>' +
+        '</div>';
+      });
+
+      const fullHtml = '<!DOCTYPE html>' +
+        '<html>' +
+        '<head>' +
+          '<meta charset="utf-8">' +
+          '<title>OSINT Intelligence Report - ' + escapeHtml(targetName || 'Export') + '</title>' +
+          '<style>' +
+            '@page { size: A4; margin: 12mm 10mm; }' +
+            '* { box-sizing: border-box; }' +
+            'body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 24px; color: #0f172a; background: #f8fafc; font-size: 13px; }' +
+            '.no-print-bar { position: sticky; top: 0; background: #0f172a; color: #fff; padding: 12px 20px; margin: -24px -24px 24px -24px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000; }' +
+            '.btn-print { background: #6366f1; color: white; border: none; padding: 8px 18px; font-size: 13px; font-weight: 700; border-radius: 6px; cursor: pointer; }' +
+            '.btn-print:hover { background: #4f46e5; }' +
+            '.btn-close { background: transparent; color: #94a3b8; border: 1px solid #334155; padding: 6px 14px; font-size: 12px; border-radius: 6px; cursor: pointer; }' +
+            '.report-container { max-width: 900px; margin: 0 auto; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 32px; box-shadow: 0 2px 10px rgba(0,0,0,0.03); }' +
+            '.header-box { border-bottom: 2px solid #6366f1; padding-bottom: 20px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: flex-start; }' +
+            '.header-left h1 { margin: 0 0 6px 0; font-size: 24px; font-weight: 800; color: #1e1b4b; letter-spacing: -0.5px; }' +
+            '.header-left p { margin: 0; color: #64748b; font-size: 13px; }' +
+            '.classification-tag { background: #eef2ff; color: #4338ca; font-size: 11px; font-weight: 700; padding: 4px 12px; border-radius: 20px; border: 1px solid #c7d2fe; text-transform: uppercase; }' +
+            '.kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 28px; }' +
+            '.kpi-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 14px; }' +
+            '.kpi-label { font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; margin-bottom: 4px; }' +
+            '.kpi-val { font-size: 16px; font-weight: 800; color: #0f172a; word-break: break-all; }' +
+            '.post-card { border: 1px solid #cbd5e1; border-radius: 10px; padding: 18px; margin-bottom: 24px; background: #ffffff; page-break-inside: avoid; break-inside: avoid; }' +
+            '.post-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #f1f5f9; padding-bottom: 10px; margin-bottom: 12px; }' +
+            '.post-title { font-weight: 700; font-size: 14px; color: #0f172a; margin-right: 8px; }' +
+            '.post-code { font-family: monospace; font-size: 13px; font-weight: 700; color: #6366f1; background: #eef2ff; padding: 2px 8px; border-radius: 4px; margin-right: 8px; }' +
+            '.post-badge { font-size: 11px; padding: 2px 8px; border-radius: 12px; background: #f1f5f9; color: #475569; font-weight: 600; }' +
+            '.post-link { font-size: 11px; color: #6366f1; text-decoration: none; word-break: break-all; }' +
+            '.post-body { display: flex; gap: 16px; margin-bottom: 12px; }' +
+            '.post-img { width: 130px; height: 130px; object-fit: cover; border-radius: 8px; border: 1px solid #e2e8f0; flex-shrink: 0; }' +
+            '.post-caption-box { flex: 1; }' +
+            '.post-caption { font-size: 12.5px; color: #334155; line-height: 1.5; word-break: break-word; }' +
+            '.report-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }' +
+            '.report-table th { background: #f8fafc; color: #475569; font-weight: 700; text-align: left; padding: 8px 10px; border: 1px solid #e2e8f0; font-size: 11px; text-transform: uppercase; }' +
+            '.report-table td { padding: 8px 10px; border: 1px solid #e2e8f0; vertical-align: top; }' +
+            '.report-table tr:nth-child(even) { background: #fcfcfd; }' +
+            '.report-footer { border-top: 1px solid #e2e8f0; margin-top: 32px; padding-top: 14px; text-align: center; font-size: 11px; color: #94a3b8; }' +
+            '@media print {' +
+              'body { background: #ffffff; padding: 0; font-size: 12px; }' +
+              '.no-print-bar { display: none !important; }' +
+              '.report-container { max-width: 100%; border: none; box-shadow: none; padding: 0; }' +
+              '.post-card { border: 1px solid #e2e8f0; break-inside: avoid; page-break-inside: avoid; margin-bottom: 20px; }' +
+              'a { text-decoration: none; color: inherit; }' +
+            '}' +
+          '</style>' +
+        '</head>' +
+        '<body>' +
+          '<div class="no-print-bar">' +
+            '<div style="display:flex; align-items:center; gap:8px;">' +
+              '<strong>🛡️ Instagram OSINT Forensic Report</strong>' +
+              '<span style="color:#94a3b8; font-size:12px;">(Select "Save as PDF" to download)</span>' +
+            '</div>' +
+            '<div style="display:flex; gap:10px;">' +
+              '<button class="btn-print" onclick="window.print()">🖨️ Download / Save as PDF</button>' +
+              '<button class="btn-close" onclick="window.close()">Close</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="report-container">' +
+            '<div class="header-box">' +
+              '<div class="header-left">' +
+                '<h1>Instagram Intelligence Forensic Dossier</h1>' +
+                '<p>Structured Media & Per-Post Comment OSINT Analysis</p>' +
+              '</div>' +
+              '<div><span class="classification-tag">OSINT EXPORT</span></div>' +
+            '</div>' +
+            '<div class="kpi-grid">' +
+              '<div class="kpi-card"><div class="kpi-label">Target Subject</div><div class="kpi-val">' + escapeHtml(targetName || 'N/A') + '</div></div>' +
+              '<div class="kpi-card"><div class="kpi-label">Posts Analyzed</div><div class="kpi-val">' + posts.length + '</div></div>' +
+              '<div class="kpi-card"><div class="kpi-label">Total Comments</div><div class="kpi-val">' + totalComments + '</div></div>' +
+              '<div class="kpi-card"><div class="kpi-label">Generated At</div><div class="kpi-val" style="font-size:12px;">' + dateStr + '</div></div>' +
+            '</div>' +
+            '<div>' + postsHtml + '</div>' +
+            '<div class="report-footer">Generated by Instagram OSINT Intelligence Scraper • ' + dateStr + '</div>' +
+          '</div>' +
+        '</body>' +
+        '</html>';
+
+      const printWin = window.open('', '_blank');
+      if (!printWin) {
+        alert('Please allow pop-ups in your browser to view and download the PDF report.');
+        return;
+      }
+      printWin.document.open();
+      printWin.document.write(fullHtml);
+      printWin.document.close();
+      setTimeout(function() {
+        try {
+          printWin.focus();
+          printWin.print();
+        } catch (e) {}
+      }, 700);
+    }
+
     function escapeHtml(str) {
       return String(str).replace(/[&<>"']/g, s => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -1147,13 +1446,24 @@ const parseJsonBody = (req) => new Promise((resolve, reject) => {
 });
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
+  const pathname = req.url.split('?')[0];
+
+  if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(HTML_CONTENT);
     return;
   }
 
-  if (req.method === 'POST' && req.url === '/api/scrape') {
+  if (req.method === 'GET' && (pathname === '/favicon.ico' || pathname === '/favicon.svg')) {
+    res.writeHead(200, {
+      'Content-Type': 'image/svg+xml',
+      'Cache-Control': 'public, max-age=86400'
+    });
+    res.end(FAVICON_SVG);
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/scrape') {
     try {
       const { type = 'user', input, count = 4, session = '' } = await parseJsonBody(req);
 
