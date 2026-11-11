@@ -44,7 +44,14 @@ function parseArgs() {
 
 // Locate Chrome or Chromium executable (Linux / Windows)
 function getBrowserPath() {
+  if (process.env.PUPPETEER_EXECUTABLE_PATH && fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
+    return process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+  const homeDir = process.env.HOME || process.env.USERPROFILE || '';
   const candidates = [
+    path.join(homeDir, '.local/bin/google-chrome'),
+    path.join(homeDir, '.local/bin/chromium'),
+    path.join(homeDir, '.cache/puppeteer/chrome/linux-151.0.7922.47/chrome-linux64/chrome'),
     '/usr/bin/google-chrome',
     '/usr/bin/google-chrome-stable',
     '/usr/bin/chromium',
